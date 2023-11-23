@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
+	"strconv"
+	"encoding/base64"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
 
 	"gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing/transport/http"
@@ -26,7 +28,7 @@ type Config struct {
 }
 
 type Projects struct {
-	TotalCount int    `json:"total_count"`
+	// TotalCount int    `json:"total_count"`
 	Items      []Repo `json:"items"`
 }
 
@@ -56,66 +58,119 @@ func main() {
 	// 	fmt.Println("Error al decodificar el token de autenticación:", err)
 	// 	return
 	// }
-	authTokenString := "token " + string(config.Token)
-
+	authTokenString := "Bearer " + string(config.Token)
 	for _, org := range config.Orgs {
-		url := config.URL + "/search/repositories?q=user:" + org.Name
+		repos, err := getGithubRepos(config, org.Name, authTokenString)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		mainsync(org.Output, repos, config.Token)
+	}
+}
+
+// func mainsync(output string, repos []Repo, token string) {
+// 	// Obtén la lista de repositorios en el grupo de GitHub
+// 	var wg sync.WaitGroup
+// 	// Recorre los repositorios y clona o actualiza
+// 	for _, repo := range repos {
+// 		repoPath := filepath.Join(output, repo.Name)
+
+// 		// Si el repositorio no existe localmente, clónalo
+// 		if _, err := os.Stat(repoPath); err == nil {
+// 			fmt.Printf("Pulling: %s\n", repo.Name)
+// 			wg.Add(1)
+// 			// pullRepository(repo, repoPath, token, &wg)
+// 			go pullRepository(repo, repoPath, token, &wg)
+// 		} else {
+// 			// if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+// 			fmt.Printf("Cloning: %s\n", repo.Name)
+// 			wg.Add(1)
+// 			// cloneRepository(repo, repoPath, token, &wg)
+// 			go cloneRepository(repo, repoPath, token, &wg)
+// 		}
+// 	}
+// 	wg.Wait()
+// }
+
+func mainsync(output string, repos []Repo, token string) {
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, 20) // Canal para limitar las concurrencias
+
+	for _, repo := range repos {
+		repoPath := filepath.Join(output, repo.Name)
+
+		if _, err := os.Stat(repoPath); err == nil {
+			fmt.Printf("Pulling: %s\n", repo.Name)
+			wg.Add(1)
+			semaphore <- struct{}{} // Añadir a canal (ocupar un "slot")
+			go func(repo Repo, repoPath string, token string) {
+				defer func() { <-semaphore }() // Liberar el "slot" al finalizar
+				pullRepository(repo, repoPath, token, &wg)
+				createScrits(repoPath)
+			}(repo, repoPath, token)
+		} else {
+			fmt.Printf("Cloning: %s\n", repo.Name)
+			wg.Add(1)
+			semaphore <- struct{}{}
+			go func(repo Repo, repoPath string, token string) {
+				defer func() { <-semaphore }()
+				cloneRepository(repo, repoPath, token, &wg)
+				createScrits(repoPath)
+			}(repo, repoPath, token)
+		}
+	}
+	wg.Wait()
+}
+
+func getGithubRepos (config Config, orgname string, authTokenString string) ([]Repo, error) {
+	var reposfull []Repo
+
+	for page := 1; ; page++ {
+		// url := config.URL + "/search/repositories?q=user:" + org.Name
+		url := config.URL + "/api/v3/orgs/" + orgname + "/repos?type=all&sort=full_name&per_page=100&page=" + strconv.Itoa(page)
 		req, err := whttp.NewRequest("GET", url, nil)
 		if err != nil {
 			fmt.Println(err)
-			return
+			return nil, err
 		}
 
 		req.Header.Add("Authorization", authTokenString)
+		req.Header.Add("Accept", "application/vnd.github+json")
+		req.Header.Add("X-GitHub-Api-Version", "2022-11-28")
+
 		// Realizar la solicitud HTTP
 		client := &whttp.Client{}
 		resp, err := client.Do(req)
 		if err != nil {
 			fmt.Println(err)
-			return
+			return nil, err
 		}
 		defer resp.Body.Close()
 
 		// Leer la respuesta
 		body, err := io.ReadAll(resp.Body)
+
 		if err != nil {
 			fmt.Println(err)
-			return
+			return nil, err
 		}
 
-		var repos Projects
+		var repos []Repo
 		err = json.Unmarshal(body, &repos)
 		if err != nil {
 			fmt.Println(err)
-			return
+			return nil, err
 		}
 
-		mainsync(org.Output, repos, config.Token)
-	}
-}
-
-func mainsync(output string, repos Projects, token string) {
-	// Obtén la lista de repositorios en el grupo de GitHub
-	var wg sync.WaitGroup
-	// Recorre los repositorios y clona o actualiza
-	for _, repo := range repos.Items {
-		repoPath := filepath.Join(output, repo.Name)
-
-		// Si el repositorio no existe localmente, clónalo
-		if _, err := os.Stat(repoPath); err == nil {
-			fmt.Printf("Pulling: %s\n", repo.Name)
-			wg.Add(1)
-			// pullRepository(repo, repoPath, token, &wg)
-			go pullRepository(repo, repoPath, token, &wg)
-		} else {
-			// if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-			fmt.Printf("Cloning: %s\n", repo.Name)
-			wg.Add(1)
-			// cloneRepository(repo, repoPath, token, &wg)
-			go cloneRepository(repo, repoPath, token, &wg)
+		if len(repos) == 0 {
+			// Al no haber elementos en repos, se sale de la función
+			break
 		}
+		reposfull = append(reposfull, repos...)
 	}
-	wg.Wait()
+
+	return reposfull, nil
 }
 
 func cloneRepository(repo Repo, destDir string, accessToken string, wg *sync.WaitGroup) {
@@ -182,4 +237,58 @@ func backupDir(destDir string) {
 	if err != nil {
 		fmt.Printf("Error on backup: %s | ERROR: %v\n", destDir, err)
 	}
+}
+
+func createScrits(repoPath string) {
+	destDir := filepath.Join(repoPath, ".git", "hooks")
+	if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
+		fmt.Println("Error creating hooks directory:", err)
+		return
+	}
+
+	if err := createPreCommitScript(destDir); err != nil {
+		fmt.Println("Error creating pre-commit script:", err)
+		return
+	}
+
+	if err := createPrePushScript(destDir); err != nil {
+		fmt.Println("Error creating pre-push script:", err)
+		return
+	}
+}
+
+func createPreCommitScript(destDir string) error {
+    preCommitPath := filepath.Join(destDir, "pre-commit")
+    encodedScript := ""
+
+    // Codificar el contenido del script en base64
+	decodedScript, err := base64.StdEncoding.DecodeString(encodedScript)
+	if err != nil {
+		return err
+	}
+
+    // Escribir el script codificado en un archivo
+	if err := ioutil.WriteFile(preCommitPath, decodedScript, 0755); err != nil {
+		return err
+    }
+
+    return nil
+}
+
+func createPrePushScript(destDir string) error {
+    preCommitPath := filepath.Join(destDir, "pre-push")
+    encodedScript := "=="
+
+    // Codificar el contenido del script en base64
+	decodedScript, err := base64.StdEncoding.DecodeString(encodedScript)
+	if err != nil {
+		return err
+	}
+
+    // Escribir el script codificado en un archivo
+	if err := ioutil.WriteFile(preCommitPath, decodedScript, 0755); err != nil {
+		return err
+    }
+
+    return nil
 }
