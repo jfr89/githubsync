@@ -6,7 +6,9 @@ import (
 	"io"
 	whttp "net/http"
 	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v2"
 
@@ -97,11 +99,13 @@ func mainsync(output string, repos Projects, token string) {
 	var wg sync.WaitGroup
 	// Recorre los repositorios y clona o actualiza
 	for _, repo := range repos.Items {
-		repoPath := output + "/" + repo.Name
+		repoPath := filepath.Join(output, repo.Name)
+
 		// Si el repositorio no existe localmente, clónalo
 		if _, err := os.Stat(repoPath); err == nil {
 			fmt.Printf("Pulling: %s\n", repo.Name)
 			wg.Add(1)
+			// pullRepository(repo, repoPath, token, &wg)
 			go pullRepository(repo, repoPath, token, &wg)
 		} else {
 			// if _, err := os.Stat(repoPath); os.IsNotExist(err) {
@@ -136,8 +140,6 @@ func cloneRepository(repo Repo, destDir string, accessToken string, wg *sync.Wai
 }
 
 func pullRepository(repo Repo, destDir string, accessToken string, wg *sync.WaitGroup) {
-	defer wg.Done()
-
 	// Abrir el repositorio existente
 	openRepo, err := git.PlainOpen(destDir)
 	if err != nil {
@@ -158,9 +160,26 @@ func pullRepository(repo Repo, destDir string, accessToken string, wg *sync.Wait
 	err = worktree.Pull(pullOptions)
 	if err == git.NoErrAlreadyUpToDate {
 		fmt.Printf("Already up to date: %s\n", repo.Name)
+	} else if err == git.ErrUnstagedChanges || err == git.ErrNonFastForwardUpdate {
+		// Repasar porque intenta hacer un merge y no quiero
+		fmt.Printf("Unstaged changes: %s\n", repo.Name)
+		backupDir(destDir)
+		cloneRepository(repo, destDir, accessToken, wg)
+		return
 	} else if err != nil {
 		fmt.Printf("Error pulling repository: %s | ERROR: %v\n", repo.Name, err)
 	} else {
 		fmt.Printf("Repository pulled successfully: %s\n", repo.Name)
+	}
+
+	wg.Done()
+}
+
+func backupDir(destDir string) {
+	now := time.Now()
+	newDestDir := fmt.Sprintf("%s_%04d%02d%02d", destDir, now.Year(), now.Month(), now.Day())
+	err := os.Rename(destDir, newDestDir)
+	if err != nil {
+		fmt.Printf("Error on backup: %s | ERROR: %v\n", destDir, err)
 	}
 }
