@@ -127,7 +127,6 @@ func getGithubRepos (config Config, orgname string, authTokenString string) ([]R
 	var reposfull []Repo
 
 	for page := 1; ; page++ {
-		// url := config.URL + "/search/repositories?q=user:" + org.Name
 		url := config.URL + "/api/v3/orgs/" + orgname + "/repos?type=all&sort=full_name&per_page=100&page=" + strconv.Itoa(page)
 		req, err := whttp.NewRequest("GET", url, nil)
 		if err != nil {
@@ -261,13 +260,13 @@ func createPreCommitScript(destDir string) error {
     preCommitPath := filepath.Join(destDir, "pre-commit")
     encodedScript := ""
 
-    // Codificar el contenido del script en base64
+    // Decodificar el contenido del script en base64
 	decodedScript, err := base64.StdEncoding.DecodeString(encodedScript)
 	if err != nil {
 		return err
 	}
 
-    // Escribir el script codificado en un archivo
+    // Escribir el script decodificado en un archivo
 	if err := ioutil.WriteFile(preCommitPath, decodedScript, 0755); err != nil {
 		return err
     }
@@ -279,13 +278,13 @@ func createPrePushScript(destDir string) error {
     preCommitPath := filepath.Join(destDir, "pre-push")
     encodedScript := "=="
 
-    // Codificar el contenido del script en base64
+    // Decodificar el contenido del script en base64
 	decodedScript, err := base64.StdEncoding.DecodeString(encodedScript)
 	if err != nil {
 		return err
 	}
 
-    // Escribir el script codificado en un archivo
+    // Escribir el script decodificado en un archivo
 	if err := ioutil.WriteFile(preCommitPath, decodedScript, 0755); err != nil {
 		return err
     }
